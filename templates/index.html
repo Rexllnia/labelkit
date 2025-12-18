@@ -1,0 +1,195 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>labelkit</title>
+<style>
+.grid { display:flex; flex-wrap:wrap }
+.item { margin:10px; position:relative }
+.item.pending img { opacity:0.4; border:3px solid orange }
+.badge {
+  position:absolute; top:5px; left:5px;
+  background:orange; padding:2px 6px;
+}
+.panel {
+  border:1px solid #ccc;
+  padding:10px;
+  margin-top:15px;
+  background:#fafafa;
+}
+</style>
+</head>
+
+<body>
+<h2>LabelKit – Dataset Upload & Validation</h2>
+
+<div class="panel">
+  <h3>Upload Images / Labels / Zip</h3>
+  <input type="file" id="files" multiple>
+  <br><br>
+  <button onclick="upload()">Upload</button>
+  <p id="upload_result"></p>
+</div>
+
+<div class="panel">
+  <h3>Validate Dataset</h3>
+  <button onclick="validate()">Run Validation</button>
+  <pre id="result"></pre>
+</div>
+
+<script>
+function upload(){
+  let fs = document.getElementById("files").files;
+  if(!fs.length){alert("no file");return;}
+  let fd = new FormData();
+  for(let f of fs) fd.append("files",f);
+
+  fetch("/upload",{method:"POST",body:fd})
+    .then(r=>r.json())
+    .then(d=>{
+      document.getElementById("upload_result").innerText =
+        "Images: "+d.images+" Labels: "+d.labels;
+    });
+}
+
+function validate(){
+  fetch("/validate")
+    .then(r=>r.json())
+    .then(d=>{
+      document.getElementById("result").innerText =
+        JSON.stringify(d,null,2);
+    });
+}
+</script>
+<h2>labelkit</h2>
+
+<div class="panel">
+  <h3>Dedup Settings</h3>
+
+  Algorithm:
+  <select id="algo">
+    <option value="phash">pHash (default)</option>
+    <!-- future -->
+    <!-- <option value="ahash">aHash</option> -->
+    <!-- <option value="clip">CLIP</option> -->
+  </select>
+
+  Threshold:
+  <input type="range" id="threshold" min="0" max="20" value="8"
+         oninput="document.getElementById('thv').innerText=this.value">
+  <span id="thv">8</span>
+
+  Keep:
+  <select id="keep">
+    <option value="first">Keep First</option>
+    <option value="last">Keep Last</option>
+  </select>
+
+  <label>
+    <input type="checkbox" id="auto_stage" checked>
+    Auto mark to staging
+  </label>
+
+  <br><br>
+  <button onclick="runDedup()">🔍 Run Dedup</button>
+</div>
+<button onclick="commit()">✅ Commit</button>
+<button onclick="toggleHistory()">🕘 History</button>
+<span id="info"></span>
+
+<div id="history" class="panel" style="display:none"></div>
+
+<hr>
+<div class="grid" id="grid"></div>
+
+<script>
+let images = {{ images|tojson }};
+let pending = [];
+let showHistory = false;
+
+function load(){
+ fetch("/staging").then(r=>r.json()).then(s=>{
+   pending = s.pending;
+   render();
+ });
+}
+
+function render(){
+ let g = document.getElementById("grid");
+ g.innerHTML="";
+ images.forEach(i=>{
+  let d = document.createElement("div");
+  d.className = "item" + (pending.includes(i)?" pending":"");
+  d.innerHTML = `
+   ${pending.includes(i)?'<div class="badge">PENDING</div>':''}
+   <img src="/static/thumbs/${i}" width=150><br>
+   <button onclick="toggle('${i}')">🗑</button>
+  `;
+  g.appendChild(d);
+ });
+ document.getElementById("info").innerText =
+   "Pending: " + pending.length;
+}
+
+function toggle(img){
+ let url = pending.includes(img) ? "/unmark/" : "/mark/";
+ fetch(url+img,{method:"POST"}).then(load);
+}
+
+function runDedup(){
+  let cfg = {
+    algo: document.getElementById("algo").value,
+    threshold: document.getElementById("threshold").value,
+    keep: document.getElementById("keep").value,
+    auto_stage: document.getElementById("auto_stage").checked
+  };
+
+  fetch("/dedup",{
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify(cfg)
+  })
+  .then(r=>r.json())
+  .then(d=>{
+    alert(
+      `Dedup done\n` +
+      `Groups: ${d.groups.length}\n` +
+      `Marked: ${d.marked.length}`
+    );
+    load();
+  });
+}
+
+
+function commit(){
+ if(!pending.length) return alert("Nothing to commit");
+ if(!confirm("Commit delete?")) return;
+ fetch("/commit",{method:"POST"}).then(()=>location.reload());
+}
+
+function toggleHistory(){
+ showHistory = !showHistory;
+ let box = document.getElementById("history");
+ box.style.display = showHistory ? "block" : "none";
+ if(!showHistory) return;
+
+ fetch("/history").then(r=>r.json()).then(h=>{
+  box.innerHTML = "<h3>History</h3>" +
+    h.map(c=>`
+     <div>
+      #${c.id} ${c.time} (${c.files.length})
+      <button onclick="rollback(${c.id})">Rollback</button>
+     </div>`).join("");
+ });
+}
+
+function rollback(id){
+ if(!confirm("Rollback commit "+id+" ?")) return;
+ fetch("/rollback/"+id,{method:"POST"}).then(()=>location.reload());
+}
+
+load();
+</script>
+
+</body>
+</html>
